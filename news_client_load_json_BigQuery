@@ -1,0 +1,175 @@
+import re, time, os, json
+from google.cloud import bigquery
+from google.cloud import storage
+
+def splash_gcs(event, context):
+    """Triggered by a change to a Cloud Storage bucket.
+    Args:
+         event (dict): Event payload.
+         context (google.cloud.functions.Context): Metadata for the event.
+    """
+
+    file = event
+    filename = file['name']
+    ts_file = 'FILE.json'
+    tk_file = 'FILE.json'
+    source_bucket = file['bucket']
+    destination_bucket = 'BUCKET'
+    dst_ts = 'SUBDIRECTORY/' + str(ts_file)
+    dst_tk = 'SUBDIRECTORY/' + str(tk_file)
+    j_config = None
+
+    client = bigquery.Client()
+
+    # load configuration
+    def loadconfig(uri, table_id, load_config):
+      if not j_config:
+        load_job = client.load_table_from_uri(
+          uri,
+          table_id,
+          location="US",  # Must match the destination dataset location.
+          job_config=load_config
+          ) # Make an API request.
+      load_job.result()  # Waits for the job to complete.
+      destination_table = client.get_table(table_id)
+      print("Loaded {} rows.".format(destination_table.num_rows,table_id))   
+
+
+    # This function is for loading contacts
+    def loadcontacts():
+      load_config = bigquery.LoadJobConfig(
+        schema=[
+          bigquery.SchemaField("id", "INTEGER"),
+          bigquery.SchemaField("last_name", "STRING"),
+          bigquery.SchemaField("first_name", "STRING"),
+          bigquery.SchemaField("middle_name", "STRING"),
+          bigquery.SchemaField("primary_email", "STRING"),
+          bigquery.SchemaField("title", "STRING"),
+          bigquery.SchemaField("notes", "STRING"),
+          bigquery.SchemaField("organization_name", "STRING"),
+          bigquery.SchemaField("street", "STRING"),
+          bigquery.SchemaField("city", "STRING"),
+          bigquery.SchemaField("state", "STRING"),
+          bigquery.SchemaField("zip", "STRING"),
+          bigquery.SchemaField("phone", "STRING"),
+          bigquery.SchemaField("vip", "BOOLEAN"),
+          bigquery.SchemaField("createdate", "DATETIME"),
+          bigquery.SchemaField("unsubscribed", "BOOLEAN"),
+          bigquery.SchemaField("bounced", "BOOLEAN"),
+          bigquery.SchemaField("invalid_email", "BOOLEAN")
+        ],
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON
+      )
+      uri = "gs://BUCKET/FILE.json"
+      table_id = "PROJECT.DATASET.TABLE"
+      loadconfig(uri,table_id, load_config)
+
+
+    # This function is for loading events
+    def loadevents():
+      load_config = bigquery.LoadJobConfig(
+        schema=[
+          bigquery.SchemaField("id", "INTEGER"),
+          bigquery.SchemaField("event_owner_first_name", "STRING"),
+          bigquery.SchemaField("event_owner_last_name", "STRING"),
+          bigquery.SchemaField("event_owner_email", "STRING"),
+          bigquery.SchemaField("event_type", "STRING"),
+          bigquery.SchemaField("splash_theme", "STRING"),
+          bigquery.SchemaField("rsvp_open", "BOOLEAN"),
+          bigquery.SchemaField("wait_list", "BOOLEAN"),
+          bigquery.SchemaField("rsvp_method", "STRING"),
+          bigquery.SchemaField("event_hashtag", "STRING"),
+          bigquery.SchemaField("group_id", "INTEGER"),
+          bigquery.SchemaField("title", "STRING"),
+          bigquery.SchemaField("event_start", "DATETIME"),
+          bigquery.SchemaField("event_end", "DATETIME"),
+          bigquery.SchemaField("venue_name", "STRING"),
+          bigquery.SchemaField("address", "STRING"),
+          bigquery.SchemaField("city", "STRING"),
+          bigquery.SchemaField("state", "STRING"),
+          bigquery.SchemaField("zip_code", "STRING"),
+          bigquery.SchemaField("country", "STRING"),
+          bigquery.SchemaField("created_at", "DATETIME"),
+          bigquery.SchemaField("modified_at", "DATETIME"),
+          bigquery.SchemaField("domain", "STRING"),
+          bigquery.SchemaField("fq_url", "STRING")
+        ],
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON
+      )
+      uri = "gs://BUCKET/FILE.json"
+      table_id = "PROJECT.DATASET.TABLE"
+      loadconfig(uri,table_id,load_config)
+  
+
+    # Print job metadata details
+    def print_details():
+      print(f"Processing file: {file['name']}.")
+      print('File: {}'.format(event['name']))
+      print('Event ID: {}'.format(context.event_id))
+      print('Event type: {}'.format(context.event_type))
+      print('Bucket: {}'.format(event['bucket']))
+      print('Metageneration: {}'.format(event['metageneration']))
+      print('Created: {}'.format(event['timeCreated']))
+      print('Updated: {}'.format(event['updated']))
+    
+    def copy_config(placeh_value, source_value, dst_bucket_value, dst_placeh_value):
+      global ts_file, source_bucket, destination_bucket, dst_file
+      source_file = placeh_value
+      source_bucket = source_value
+      destination_bucket = dst_bucket_value
+      dst_file = dst_placeh_value
+
+      storage_client = storage.Client()
+
+      bucket = storage_client.get_bucket(source_bucket)
+      dst_bucket = storage_client.get_bucket(destination_bucket)
+      blob = bucket.blob(source_file)
+      dst_blob = dst_bucket.blob(dst_file)
+      data = json.loads(blob.download_as_string(client=None))
+ 
+      output = dst_bucket.blob(dst_file)
+      output.upload_from_string(
+          data=json.dumps(data),
+          content_type='application/json'
+      )
+      print( "{}/{} was copied to {}/{}.".format(
+            bucket.name,
+            blob.name,
+            dst_bucket.name,
+            dst_blob.name
+        )
+      )
+
+    # Upload to BQ based on file name 
+    if re.match('^REGEX', filename):
+      loadcontacts()
+      print_details()
+      print('CONTACT LOAD END')
+    elif re.match('^REGEX', filename):
+      loadevents()
+      print_details()
+      print('EVENT LOAD END')
+    elif re.match('^REGEX', filename):
+      loadgroups()
+      print_details()
+      print('GROUP LOAD END')
+    else:
+      pass
+
+    # Create backup of config fils in another bucket.
+    if re.match('^REGEX', ts_file):
+      copy_config(
+        ts_file,
+        source_bucket, 
+        destination_bucket, 
+        dst_ts
+      )
+
+    if re.match('^REGEX', tk_file):
+      copy_config(
+        tk_file,
+        source_bucket, 
+        destination_bucket, 
+        dst_tk
+      )
+
