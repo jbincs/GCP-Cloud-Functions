@@ -1,0 +1,181 @@
+import base64
+import logging
+import json
+import requests as req
+import time
+import pytz
+import os
+import tempfile
+import pandas as pd
+from os import path
+from datetime import datetime, timedelta
+from google.cloud import storage
+
+def splashRsvp_pubsub(event, context):
+    """Triggered from a message on a Cloud Pub/Sub topic.
+    Args:
+         event (dict): Event payload.
+         context (google.cloud.functions.Context): Metadata for the event.
+    """
+    base_url = 'https://api.splashthat.com/'
+    endpoint = ['events','contacts','groupcontacts','?access_token='] 
+
+    client = storage.Client()
+    process_bucket = client.get_bucket('splapi_processing')
+    token_file = 'splash_apiTk3n.json'
+    ts_file = 'splash_timestamp.json'
+
+    est = pytz.timezone('US/Eastern')
+    now = datetime.now().astimezone(est).strftime('%Y-%m-%d %H:%M:%S')
+    future = datetime.now() + timedelta(days=365)
+    next_year = future.astimezone(est).strftime('%Y-%m-%d %H:%M:%S')
+
+    def file_params(blob_bucket, blob_file):
+        bucket = blob_bucket
+        blob = bucket.blob(blob_file)
+        json_data = blob.download_as_string()
+        data = json.loads(json_data)
+        return data
+    
+    def data_upload(blob_bucket, blob_file, load_data):
+        bucket = client.get_bucket(blob_bucket)
+        output = bucket.blob(blob_file)
+        output.upload_from_string(
+            data=json.dumps(load_data),
+            content_type='application/json'
+        )
+    
+    access = file_params(process_bucket, token_file)
+    access_token = access['access_token']
+    event_url = base_url + endpoint[0] + endpoint[3] + access_token
+    rsvp_url = base_url + endpoint[2] + endpoint[3] + access_token 
+    time = file_params(process_bucket, ts_file)
+    prev_ts = time['rsvp_ts']
+
+    with req.get(event_url) as response:
+        meta = response.json()
+        meta_dump = json.dumps(meta)
+        load = json.loads(meta_dump)
+        total_pages = load['count'] 
+
+    for pn in range(1, total_pages):
+        grp_url = event_url + '&page=' + str(pn) + '&sort=event_start_desc' +  '&limit=1'
+        with req.get(grp_url) as receive:
+            raw = receive.json()
+            source = json.dumps(raw, indent=4)
+            load = json.loads(source)
+            data = load['data'][0]
+            uid = data['id']
+            start = data['event_start'] 
+            end = data['event_end'] 
+
+        if start < next_year:
+            
+            if end == None:
+                start = pd.to_datetime(data['event_start'])
+                time_change = start + timedelta(days=600)
+                start = time_change.astimezone(est).strftime('%Y-%m-%d %H:%M:%S')
+                end = start
+    
+            if end >= now:
+                # print('id: ' + str(uid) + ', start: ' + str(start) + ', end: ' + str(end))
+                url = rsvp_url + '&limit=1'+ '&event_id=' + str(uid)
+                with req.get(url) as get:
+                    rawdata = get.json()
+                    dump = json.dumps(rawdata, indent=4)
+                    loaded = json.loads(dump)
+                    data = loaded['data']
+                    total_pages = loaded['pages']
+
+                    print('total pages: ' +  str(total_pages))
+
+                    if data != []:
+                        for pg in reversed(range(total_pages)):
+                            url = url + '&page=' + str(pg) + '&sort=modified'
+                            with req.get(url) as response:
+                                raw = response.json()
+                                source = json.dumps(raw, indent=4)
+                                load = json.loads(source)
+                                data = load['data'][0]
+                                rsvp = data['event_rsvp']
+
+                                rid = rsvp['id']
+                                eventid = rsvp['event_id']
+                                contact = rsvp['contact_id']
+                                ticket = rsvp['ticket_sale']
+                                track = rsvp['tracking_link']
+                                parent = rsvp['parent_event_rsvp']
+                                checkout = rsvp['checked_out']
+                                first = rsvp['first_name']
+                                last = rsvp['last_name']
+                                guest = rsvp['guest_name']
+                                email = rsvp['email']
+                                plus = rsvp['plus_one']
+                                created = pd.to_datetime(rsvp['created']).strftime('%Y-%m-%d %H:%M:%S')
+                                modified = pd.to_datetime(rsvp['modified']).strftime('%Y-%m-%d %H:%M:%S')
+                                rsvpd = pd.to_datetime(rsvp['date_rsvped']).strftime('%Y-%m-%d %H:%M:%S')
+                                ip = rsvp['ip_address']
+                                attend = rsvp['attending']
+                                delete = rsvp['deleted']
+                                checkin = rsvp['checked_in']
+                                unusb = rsvp['unsub_tag']
+                                ticket = rsvp['ticket_number']
+                                vip = rsvp['vip']
+                                wait = rsvp['waitlist']
+                                qrurl = rsvp['qr_url']
+                                unsub = rsvp['unsubscribed']
+                                eventlist = data['event_lists']
+                                status = data['status']
+                                sf = data['salesforce_campaign_member_id']
+                                answers = data['answers']
+                                out_ts = pd.to_datetime(rsvp['modified']).strftime('%Y%m%d-%H%M%S')
+
+                                output = {
+                                    "id": rid,
+                                    "event_id": eventid,
+                                    "contact_id": contact,
+                                    "ticket_sale": ticket,
+                                    "tracking_link": track,
+                                    "parent_event_rsvp": parent,
+                                    "checked_out": checkout,
+                                    "first_name": first,
+                                    "last_name": last,
+                                    "guest_name": guest,
+                                    "email": email,
+                                    "plus_one": plus,
+                                    "created": created,
+                                    "modified": modified,
+                                    "date_rsvped": rsvpd,
+                                    "ip_address": ip,
+                                    "attending": attend,
+                                    "deleted": delete,
+                                    "checked_in": checkin,
+                                    "unsub_tag": unsub,
+                                    "ticket_number": ticket,
+                                    "vip": vip,
+                                    "waitlist": wait,
+                                    "qr_url": qrurl,
+                                    "unsubscribed": unsub,
+                                    "event_lists": eventlist,
+                                    "status": status,
+                                    "salesforce_campaign_member_id": sf,
+                                    "answers": answers
+                                }
+
+                                if modified >= prev_ts:
+                                    # print(pg, str(output['event_id']), str(output['modified']))
+                                    print(pg, output)
+                                    target_file = 'splash-r' + out_ts + '.json'
+                                    data_upload(process_bucket, target_file, output)   
+                                if modified < prev_ts:
+                                    time['rsvp_ts'] = now
+                                    data_upload(process_bucket, ts_file, time)   
+                                    print('RSVP timestamp updated: ' + str(time['rsvp_ts']))
+                                    print('RSVP data pull from API completed.')
+                                    break
+
+            if end < now:
+                return 'OK'
+
+    pubsub_message = base64.b64decode(event['data']).decode('utf-8')
+    print(pubsub_message)
